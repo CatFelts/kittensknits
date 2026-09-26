@@ -16,6 +16,7 @@
 
 [build.environment]
   NODE_VERSION = "22"
+  SECRETS_SCAN_OMIT_PATHS = ".env.example,README.md"
 
 # Stripe signs webhooks over the RAW request body, so nothing may rewrite or
 # recompress it on the way in.
