@@ -1,12 +1,23 @@
 "use server";
 
 import { randomUUID } from "node:crypto";
+import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
+import type Stripe from "stripe";
 
 import { clearCart, getCart } from "@/lib/cart";
 import { checkoutMode } from "@/lib/checkout-mode";
-import { createOrder, markOrderPaid, type OrderItem } from "@/lib/db";
+import {
+  cancelOrder,
+  createOrder,
+  getOrder,
+  markOrderPaid,
+  type OrderItem,
+  RESERVATION_MINUTES,
+} from "@/lib/db";
+import { CHECKOUT_COOKIE, ownPendingOrderId } from "@/lib/inventory";
 import { CURRENCY } from "@/lib/money";
+import { SHIPPING, shippingFor } from "@/lib/shipping";
 import { siteUrl, stripe } from "@/lib/stripe";
 
 function newOrderId(): string {
@@ -30,7 +41,33 @@ function newOrderId(): string {
  *
  * Prices come from the catalog, never from the request.
  */
+/**
+ * A shopper who went to Stripe, came back without paying, and is checking out
+ * again still holds the items from their first attempt. Close that first
+ * Stripe session (so it can no longer be paid) and drop its hold, so the
+ * same skein is never held, or paid for, twice.
+ */
+async function releaseEarlierCheckout(): Promise<void> {
+  const previousId = await ownPendingOrderId();
+  if (!previousId) return;
+
+  const previous = await getOrder(previousId);
+  if (previous?.status !== "pending" || !previous.stripe_session_id) return;
+
+  try {
+    await stripe().checkout.sessions.expire(previous.stripe_session_id);
+    await cancelOrder(previous.id);
+  } catch {
+    // Stripe refuses to expire a session that already completed or expired.
+    // Either way the webhook settles that order; leave it alone.
+  }
+}
+
 export async function checkout(): Promise<void> {
+  if (checkoutMode() === "stripe") {
+    await releaseEarlierCheckout();
+  }
+
   const cart = await getCart();
 
   if (cart.items.length === 0) {
@@ -50,6 +87,8 @@ export async function checkout(): Promise<void> {
   }));
 
   const mode = checkoutMode();
+  const shippingCents = shippingFor(cart.subtotalCents);
+  const totalCents = cart.subtotalCents + shippingCents;
 
   // No database, so no order can be recorded. The cart page renders a mailto
   // link rather than a submit button in this mode, so getting here means a
@@ -66,7 +105,8 @@ export async function checkout(): Promise<void> {
       id: orderId,
       mode: "demo",
       items,
-      totalCents: cart.subtotalCents,
+      totalCents,
+      shippingCents,
       currency: CURRENCY,
       status: "pending",
     });
@@ -88,7 +128,24 @@ export async function checkout(): Promise<void> {
         },
       },
     })),
-    shipping_address_collection: { allowed_countries: ["US", "CA", "GB"] },
+    shipping_address_collection: {
+      allowed_countries:
+        SHIPPING.countries as unknown as Stripe.Checkout.SessionCreateParams.ShippingAddressCollection.AllowedCountry[],
+    },
+    shipping_options: [
+      {
+        shipping_rate_data: {
+          type: "fixed_amount",
+          fixed_amount: { amount: shippingCents, currency: CURRENCY },
+          display_name: shippingCents === 0 ? "Free shipping" : "Shipping",
+        },
+      },
+    ],
+    // The items are held for this shopper until the session expires (see
+    // soldCounts in src/lib/db.ts). One spare minute keeps us clear of
+    // Stripe's 30-minute minimum.
+    expires_at:
+      Math.floor(Date.now() / 1000) + (RESERVATION_MINUTES + 1) * 60,
     success_url: `${siteUrl()}/order/complete?session_id={CHECKOUT_SESSION_ID}`,
     cancel_url: `${siteUrl()}/cart?error=cancelled`,
     metadata: { orderId },
@@ -99,10 +156,20 @@ export async function checkout(): Promise<void> {
     id: orderId,
     mode: "stripe",
     items,
-    totalCents: cart.subtotalCents,
+    totalCents,
+    shippingCents,
     currency: CURRENCY,
     stripeSessionId: session.id,
     status: "pending",
+  });
+
+  const store = await cookies();
+  store.set(CHECKOUT_COOKIE, orderId, {
+    httpOnly: true,
+    sameSite: "lax",
+    path: "/",
+    maxAge: 60 * 60 * 24,
+    secure: process.env.NODE_ENV === "production",
   });
 
   if (!session.url) {

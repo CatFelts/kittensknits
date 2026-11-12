@@ -1,8 +1,10 @@
+import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 
 import { clearCart } from "@/lib/cart";
 import { getOrderBySessionId, markOrderPaid } from "@/lib/db";
-import { isStripeConfigured, stripe } from "@/lib/stripe";
+import { CHECKOUT_COOKIE } from "@/lib/inventory";
+import { customerDetails, isStripeConfigured, stripe } from "@/lib/stripe";
 
 /**
  * Stripe redirects the customer here after a successful payment.
@@ -23,6 +25,7 @@ export async function GET(request: Request) {
   }
 
   await clearCart();
+  (await cookies()).delete(CHECKOUT_COOKIE);
 
   const order = await getOrderBySessionId(sessionId);
   if (!order) {
@@ -35,7 +38,8 @@ export async function GET(request: Request) {
     try {
       const session = await stripe().checkout.sessions.retrieve(sessionId);
       if (session.payment_status === "paid") {
-        await markOrderPaid(order.id, session.customer_details?.email ?? null);
+        const { email, shipping } = customerDetails(session);
+        await markOrderPaid(order.id, email, shipping);
       }
     } catch {
       // Non-fatal: the webhook is the authority and will settle it.

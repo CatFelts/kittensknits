@@ -19,9 +19,11 @@ export default async function SuccessPage({
     <div className="mx-auto max-w-2xl px-5 py-20 text-center">
       <h1 className="text-3xl">Thank you.</h1>
       <p className="mt-4 text-muted">
-        {order
-          ? "Your order is confirmed. I'll email you a shipping note once it's on its way."
-          : "Your order went through. Check your email for the receipt."}
+        {!order
+          ? "Your order went through. Check your email for the receipt."
+          : order.status === "paid"
+            ? "Your order is confirmed. I'll email you a shipping note once it's on its way."
+            : "Your order is in. Your payment is still clearing; I'll ship as soon as it does."}
       </p>
 
       {order && (
@@ -47,7 +49,16 @@ export default async function SuccessPage({
             ))}
           </ul>
 
-          <div className="flex justify-between border-t border-line pt-3">
+          <div className="flex justify-between border-t border-line pt-3 text-sm text-muted">
+            <span>Shipping</span>
+            <span>
+              {order.shipping_cents === 0
+                ? "Free"
+                : formatCents(order.shipping_cents)}
+            </span>
+          </div>
+
+          <div className="flex justify-between pt-2">
             <span>Total</span>
             <span>{formatCents(order.total_cents)}</span>
           </div>

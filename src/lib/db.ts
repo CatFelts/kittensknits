@@ -62,30 +62,79 @@ function optionalDb(): Sql | null {
 // --- inventory ---------------------------------------------------------------
 
 /**
- * sku -> units already sold. Missing rows mean zero sold.
+ * How long a shopper who has started Stripe checkout gets to pay before the
+ * items go back on sale. Stripe's minimum session lifetime is 30 minutes.
+ */
+export const RESERVATION_MINUTES = 30;
+
+/**
+ * sku -> units unavailable: sold, plus units HELD by someone mid-checkout.
+ * Missing rows mean zero.
+ *
+ * Holding matters because nearly everything here is one of a kind. Without it,
+ * two shoppers could both reach Stripe with the same skein and both pay for it.
+ * A hold is:
+ *   - a 'pending' Stripe order younger than the session lifetime (plus a
+ *     couple of minutes' grace), or
+ *   - a 'processing' order: checkout finished but a slow payment method such
+ *     as a bank transfer hasn't cleared yet.
+ *
+ * `excludeOrderId` leaves out the current shopper's own hold, so pressing Back
+ * on the Stripe page doesn't make their own cart look sold out to them.
  *
  * With no database this returns an empty map, so the shop falls back to the
  * `stock` numbers in products.ts.
  */
-export async function soldCounts(): Promise<Map<string, number>> {
+export async function soldCounts(
+  excludeOrderId: string | null = null,
+): Promise<Map<string, number>> {
   const sql = optionalDb();
   if (!sql) return new Map();
 
-  const rows = (await sql`SELECT sku, sold FROM inventory`) as {
-    sku: string;
-    sold: number;
-  }[];
+  const rows = (await sql`
+    SELECT sku, SUM(n)::int AS sold FROM (
+      SELECT sku, sold AS n FROM inventory
+      UNION ALL
+      SELECT item->>'sku' AS sku, (item->>'qty')::int AS n
+        FROM orders, LATERAL jsonb_array_elements(orders.items_json) AS item
+       WHERE (orders.status = 'processing'
+              OR (orders.status = 'pending'
+                  AND orders.mode = 'stripe'
+                  AND orders.created_at >
+                      now() - make_interval(mins => ${RESERVATION_MINUTES + 2})))
+         AND orders.id IS DISTINCT FROM ${excludeOrderId}::text
+    ) unavailable
+    GROUP BY sku
+  `) as { sku: string; sold: number }[];
   return new Map(rows.map((r) => [r.sku, Number(r.sold)]));
 }
 
-export async function soldCount(sku: string): Promise<number> {
-  const sql = optionalDb();
-  if (!sql) return 0;
+// --- counters ----------------------------------------------------------------
 
-  const rows = (await sql`SELECT sold FROM inventory WHERE sku = ${sku}`) as {
-    sold: number;
-  }[];
-  return rows.length > 0 ? Number(rows[0].sold) : 0;
+/**
+ * Add one to a named counter and return the new value. Returns null with no
+ * database, so callers can hide the number instead of showing a fake one.
+ */
+export async function bumpCounter(name: string): Promise<number | null> {
+  const sql = optionalDb();
+  if (!sql) return null;
+
+  const rows = (await sql`
+    INSERT INTO counters (name, value) VALUES (${name}, 1)
+    ON CONFLICT (name) DO UPDATE SET value = counters.value + 1
+    RETURNING value
+  `) as { value: number | string }[];
+  return Number(rows[0].value);
+}
+
+export async function readCounter(name: string): Promise<number | null> {
+  const sql = optionalDb();
+  if (!sql) return null;
+
+  const rows = (await sql`
+    SELECT value FROM counters WHERE name = ${name}
+  `) as { value: number | string }[];
+  return rows.length > 0 ? Number(rows[0].value) : 0;
 }
 
 // --- orders ------------------------------------------------------------------
@@ -97,12 +146,25 @@ export type OrderItem = {
   unitPriceCents: number;
 };
 
+/** Where to post it. Copied from Stripe once the customer has paid. */
+export type ShippingAddress = {
+  name: string | null;
+  line1: string | null;
+  line2: string | null;
+  city: string | null;
+  state: string | null;
+  postal_code: string | null;
+  country: string | null;
+};
+
 type OrderRow = {
   id: string;
   status: string;
   mode: string;
   email: string | null;
   total_cents: number;
+  shipping_cents: number | null;
+  shipping_json: ShippingAddress | string | null;
   currency: string;
   // jsonb comes back already parsed; tolerate a string in case the column is
   // ever migrated back to text.
@@ -114,10 +176,19 @@ type OrderRow = {
 
 export type Order = {
   id: string;
-  status: "pending" | "paid" | "cancelled";
+  /**
+   * pending     sent to Stripe, not paid yet (items held for a while)
+   * processing  checkout done, slow payment (e.g. bank transfer) still clearing
+   * paid        money received; stock decremented
+   * cancelled   abandoned, expired, or the payment failed
+   */
+  status: "pending" | "processing" | "paid" | "cancelled";
   mode: "stripe" | "demo";
   email: string | null;
+  /** Everything the customer paid, shipping included. */
   total_cents: number;
+  shipping_cents: number;
+  shipping: ShippingAddress | null;
   currency: string;
   stripe_session_id: string | null;
   created_at: string;
@@ -145,6 +216,11 @@ function hydrate(row: OrderRow | undefined): Order | null {
     mode: row.mode as Order["mode"],
     email: row.email,
     total_cents: Number(row.total_cents),
+    shipping_cents: Number(row.shipping_cents ?? 0),
+    shipping:
+      typeof row.shipping_json === "string"
+        ? (JSON.parse(row.shipping_json) as ShippingAddress)
+        : row.shipping_json,
     currency: row.currency,
     stripe_session_id: row.stripe_session_id,
     created_at: stamp(row.created_at)!,
@@ -160,7 +236,9 @@ export async function createOrder(input: {
   id: string;
   mode: "stripe" | "demo";
   items: OrderItem[];
+  /** Shipping included. */
   totalCents: number;
+  shippingCents: number;
   currency: string;
   stripeSessionId?: string | null;
   status?: "pending" | "paid";
@@ -169,10 +247,10 @@ export async function createOrder(input: {
   const status = input.status ?? "pending";
   await db()`
     INSERT INTO orders
-      (id, status, mode, email, total_cents, currency, items_json, stripe_session_id, paid_at)
+      (id, status, mode, email, total_cents, shipping_cents, currency, items_json, stripe_session_id, paid_at)
     VALUES
       (${input.id}, ${status}, ${input.mode}, ${input.email ?? null},
-       ${input.totalCents}, ${input.currency},
+       ${input.totalCents}, ${input.shippingCents}, ${input.currency},
        ${JSON.stringify(input.items)}::jsonb, ${input.stripeSessionId ?? null},
        CASE WHEN ${status} = 'paid' THEN now() ELSE NULL END)
   `;
@@ -224,13 +302,15 @@ export async function getOrderBySessionId(
 export async function markOrderPaid(
   orderId: string,
   email?: string | null,
+  shipping?: ShippingAddress | null,
 ): Promise<boolean> {
   const rows = (await db()`
     WITH claimed AS (
       UPDATE orders
          SET status  = 'paid',
              paid_at = now(),
-             email   = COALESCE(${email ?? null}, email)
+             email   = COALESCE(${email ?? null}, email),
+             shipping_json = COALESCE(${shipping ? JSON.stringify(shipping) : null}::jsonb, shipping_json)
        WHERE id = ${orderId}
          AND status <> 'paid'
       RETURNING id, items_json
@@ -250,6 +330,35 @@ export async function markOrderPaid(
   `) as { applied: number }[];
 
   return (rows[0]?.applied ?? 0) > 0;
+}
+
+/**
+ * Checkout finished but the money hasn't cleared (a bank transfer, say). Keep
+ * holding the items until Stripe tells us it succeeded or failed.
+ */
+export async function markOrderProcessing(
+  orderId: string,
+  email?: string | null,
+  shipping?: ShippingAddress | null,
+): Promise<void> {
+  await db()`
+    UPDATE orders
+       SET status = 'processing',
+           email  = COALESCE(${email ?? null}, email),
+           shipping_json = COALESCE(${shipping ? JSON.stringify(shipping) : null}::jsonb, shipping_json)
+     WHERE id = ${orderId} AND status = 'pending'
+  `;
+}
+
+/**
+ * Release an unpaid order's hold on its items. Never touches a paid order, so a
+ * late or repeated "expired" event can't undo a sale.
+ */
+export async function cancelOrder(orderId: string): Promise<void> {
+  await db()`
+    UPDATE orders SET status = 'cancelled'
+     WHERE id = ${orderId} AND status IN ('pending', 'processing')
+  `;
 }
 
 export async function listOrders(limit = 100): Promise<Order[]> {

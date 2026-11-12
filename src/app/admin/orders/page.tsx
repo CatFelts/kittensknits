@@ -74,9 +74,9 @@ export default async function AdminOrdersPage({
       <div className="mx-auto max-w-md px-5 py-20">
         <h1 className="text-2xl">Orders</h1>
         <p className="mt-4 text-sm text-muted">
-          Set <code className="text-ink">ADMIN_PASSWORD</code> in{" "}
-          <code className="text-ink">.env.local</code> and restart the dev server
-          to enable this page.
+          Set <code className="text-ink">ADMIN_PASSWORD</code> (in{" "}
+          <code className="text-ink">.env.local</code> locally, or in Netlify&apos;s
+          environment variables on the live site) to enable this page.
         </p>
       </div>
     );
@@ -151,7 +151,13 @@ export default async function AdminOrdersPage({
               </div>
               <div className="mt-1 flex flex-wrap gap-3 text-muted">
                 <span
-                  className={order.status === "paid" ? "text-moss" : "text-clay"}
+                  className={
+                    order.status === "paid"
+                      ? "text-moss"
+                      : order.status === "cancelled"
+                        ? "text-muted line-through"
+                        : "text-clay"
+                  }
                 >
                   {order.status}
                 </span>
@@ -165,7 +171,30 @@ export default async function AdminOrdersPage({
                 {order.items
                   .map((i) => `${i.name}${i.qty > 1 ? ` ×${i.qty}` : ""}`)
                   .join(", ")}
+                {order.shipping_cents > 0 &&
+                  ` + ${formatCents(order.shipping_cents)} shipping`}
               </p>
+              {order.shipping && (
+                <address className="mt-2 whitespace-pre-line text-ink not-italic">
+                  {[
+                    order.shipping.name,
+                    order.shipping.line1,
+                    order.shipping.line2,
+                    [
+                      order.shipping.city,
+                      order.shipping.state,
+                      order.shipping.postal_code,
+                    ]
+                      .filter(Boolean)
+                      .join(" "),
+                    order.shipping.country !== "US"
+                      ? order.shipping.country
+                      : null,
+                  ]
+                    .filter(Boolean)
+                    .join("\n")}
+                </address>
+              )}
             </li>
           ))}
         </ul>

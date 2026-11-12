@@ -1,8 +1,13 @@
 import { NextResponse } from "next/server";
 import type Stripe from "stripe";
 
-import { getOrderBySessionId, markOrderPaid } from "@/lib/db";
-import { isStripeConfigured, stripe } from "@/lib/stripe";
+import {
+  cancelOrder,
+  getOrderBySessionId,
+  markOrderPaid,
+  markOrderProcessing,
+} from "@/lib/db";
+import { customerDetails, isStripeConfigured, stripe } from "@/lib/stripe";
 
 /**
  * Stripe's webhook. This is the ONLY authority on whether an order is paid —
@@ -42,17 +47,24 @@ export async function POST(request: Request) {
     case "checkout.session.completed":
     case "checkout.session.async_payment_succeeded": {
       const session = event.data.object;
-      if (session.payment_status === "paid") {
-        const order =
-          (await getOrderBySessionId(session.id)) ??
-          (session.client_reference_id
-            ? { id: session.client_reference_id }
-            : null);
+      const orderId = await orderIdFor(session);
+      if (!orderId) break;
 
-        if (order) {
-          await markOrderPaid(order.id, session.customer_details?.email ?? null);
-        }
+      const { email, shipping } = customerDetails(session);
+      if (session.payment_status === "paid") {
+        await markOrderPaid(orderId, email, shipping);
+      } else {
+        // Checkout finished with a slow payment method (e.g. bank transfer).
+        // Keep holding the items until async_payment_succeeded or _failed.
+        await markOrderProcessing(orderId, email, shipping);
       }
+      break;
+    }
+    case "checkout.session.expired":
+    case "checkout.session.async_payment_failed": {
+      // Abandoned, or the slow payment bounced. Put the items back on sale.
+      const orderId = await orderIdFor(event.data.object);
+      if (orderId) await cancelOrder(orderId);
       break;
     }
     default:
@@ -61,4 +73,11 @@ export async function POST(request: Request) {
   }
 
   return NextResponse.json({ received: true });
+}
+
+async function orderIdFor(
+  session: Stripe.Checkout.Session,
+): Promise<string | null> {
+  const order = await getOrderBySessionId(session.id);
+  return order?.id ?? session.client_reference_id ?? null;
 }

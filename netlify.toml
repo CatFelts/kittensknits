@@ -8,7 +8,8 @@
 # why orders live in Neon rather than on disk. See src/lib/db.ts.
 
 [build]
-  command = "npm run build"
+  # Apply the database schema first (safe to repeat; it never drops data).
+  command = "npm run db:init -- --if-configured && npm run build"
   publish = ".next"
 
 [[plugins]]

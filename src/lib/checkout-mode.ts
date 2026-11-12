@@ -65,6 +65,19 @@ export function checkoutMode(): CheckoutMode {
   }
 
   if (isStripeConfigured) return "stripe";
+
+  // Demo mode hands out free orders and takes the stock. That is fine on your
+  // laptop and a disaster on the live site, where a deleted or mistyped Stripe
+  // key would otherwise quietly let anyone "buy" everything for nothing. A
+  // production build only ever runs demo if CHECKOUT_MODE=demo says so outright.
+  if (hasDb && process.env.NODE_ENV === "production") {
+    warnOnce(
+      "DATABASE_URL is set but STRIPE_SECRET_KEY is not, so card checkout is " +
+        "off. Falling back to enquiry checkout rather than demo orders.",
+    );
+    return "enquiry";
+  }
+
   return hasDb ? "demo" : "enquiry";
 }
 

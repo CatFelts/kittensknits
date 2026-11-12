@@ -9,6 +9,7 @@ import { Window } from "@/components/Window";
 import { getCart } from "@/lib/cart";
 import { checkoutMode } from "@/lib/checkout-mode";
 import { formatCents } from "@/lib/money";
+import { SHIPPING, shippingFor } from "@/lib/shipping";
 import { site } from "@/lib/site";
 
 export const metadata: Metadata = { title: "Cart" };
@@ -16,7 +17,7 @@ export const metadata: Metadata = { title: "Cart" };
 const ERRORS: Record<string, string> = {
   empty: "Your cart is empty.",
   changed:
-    "Something in your cart sold or changed. The cart below is up to date — check it, then try again.",
+    "Something in your cart just sold, or someone else is checking out with it right now. The cart below is up to date — check it, then try again.",
   cancelled: "Checkout cancelled. Your cart is still here.",
   stripe: "Could not reach the payment provider. Please try again.",
   enquiry:
@@ -31,6 +32,12 @@ export default async function CartPage({
   const { error, added } = await searchParams;
   const cart = await getCart();
   const mode = checkoutMode();
+  const shippingCents = shippingFor(cart.subtotalCents);
+  const totalCents = cart.subtotalCents + shippingCents;
+  const toFreeShipping =
+    SHIPPING.freeOverCents !== null && shippingCents > 0
+      ? SHIPPING.freeOverCents - cart.subtotalCents
+      : 0;
 
   // Plain-text order summary. Used twice: as the body of the mailto link, and
   // as the copy-and-paste fallback for anyone whose browser has no mail app
@@ -45,6 +52,8 @@ export default async function CartPage({
     ),
     "",
     `Subtotal: ${formatCents(cart.subtotalCents)}`,
+    `Shipping: ${shippingCents === 0 ? "free" : formatCents(shippingCents)}`,
+    `Total: ${formatCents(totalCents)}`,
     "",
     "Ship to:",
     "(please add your address)",
@@ -167,12 +176,27 @@ export default async function CartPage({
             </ul>
           </Window>
 
-          <div className="mt-5 flex items-baseline justify-between border-t-2 border-clay pt-4">
-            <span className="font-display text-xl text-ink">Subtotal</span>
+          <dl className="mt-5 space-y-1 border-t-2 border-clay pt-4 text-sm text-ink">
+            <div className="flex justify-between">
+              <dt>Subtotal</dt>
+              <dd>{formatCents(cart.subtotalCents)}</dd>
+            </div>
+            <div className="flex justify-between">
+              <dt>Shipping (US)</dt>
+              <dd>{shippingCents === 0 ? "Free" : formatCents(shippingCents)}</dd>
+            </div>
+          </dl>
+          <div className="mt-3 flex items-baseline justify-between">
+            <span className="font-display text-xl text-ink">Total</span>
             <span className="border-2 border-ink bg-lime px-3 py-1 text-xl text-ink shadow-[3px_3px_0_0_var(--color-ink)]">
-              {formatCents(cart.subtotalCents)}
+              {formatCents(totalCents)}
             </span>
           </div>
+          {toFreeShipping > 0 && (
+            <p className="mt-2 text-xs text-clay">
+              Add {formatCents(toFreeShipping)} more for free shipping.
+            </p>
+          )}
           <p className="mt-2 text-xs text-muted">{site.shippingNote}</p>
 
           {mode === "enquiry" ? (

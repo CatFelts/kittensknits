@@ -1,6 +1,7 @@
 import Link from "next/link";
 
 import { DiskIcon, SparkleIcon } from "@/components/Icons";
+import { VisitorCounter } from "@/components/VisitorCounter";
 import { site } from "@/lib/site";
 
 export function Footer() {
@@ -35,14 +36,13 @@ export function Footer() {
           </nav>
 
           {/*
-            Period furniture. The counter is a static ornament, not analytics —
-            there is no tracking on this site at all. If you ever want real
-            numbers, Vercel Analytics is a one-line add and doesn't use cookies.
+            Period furniture that actually counts: one tick per browser session,
+            stored as a single number in the database. No cookies, no tracking.
           */}
           <div className="text-xs text-muted">
             <div className="win inline-block px-2 py-1">
               <span className="font-display">visitor no.</span>{" "}
-              <span className="bg-ink px-1 font-mono text-lime">000001</span>
+              <VisitorCounter />
             </div>
             <p className="mt-2 flex items-center gap-1">
               <DiskIcon className="h-3.5 w-3.5" />

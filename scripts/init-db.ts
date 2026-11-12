@@ -13,6 +13,14 @@ import { SCHEMA } from "../src/lib/schema.ts";
 
 const url = process.env.DATABASE_URL?.trim();
 
+// Netlify runs this before every build (see netlify.toml) with --if-configured,
+// so schema changes reach production on deploy. A site with no database simply
+// skips it instead of failing the build.
+if (!url && process.argv.includes("--if-configured")) {
+  console.log("No DATABASE_URL; skipping schema setup.");
+  process.exit(0);
+}
+
 if (!url) {
   console.error(
     "No DATABASE_URL.\n\n" +

@@ -10,7 +10,7 @@
 export const SCHEMA: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS orders (
      id                TEXT PRIMARY KEY,
-     status            TEXT NOT NULL,          -- 'pending' | 'paid' | 'cancelled'
+     status            TEXT NOT NULL,          -- 'pending' | 'processing' | 'paid' | 'cancelled'
      mode              TEXT NOT NULL,          -- 'stripe' | 'demo'
      email             TEXT,
      total_cents       INTEGER NOT NULL,
@@ -23,6 +23,15 @@ export const SCHEMA: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS inventory (
      sku  TEXT PRIMARY KEY,
      sold INTEGER NOT NULL DEFAULT 0
+   )`,
+  // Added after launch. ADD COLUMN IF NOT EXISTS brings older databases up to
+  // date without touching existing rows.
+  `ALTER TABLE orders ADD COLUMN IF NOT EXISTS shipping_cents INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE orders ADD COLUMN IF NOT EXISTS shipping_json JSONB`, // name + address from Stripe
+  // Named counters. Only one so far: 'visitors', for the footer counter.
+  `CREATE TABLE IF NOT EXISTS counters (
+     name  TEXT PRIMARY KEY,
+     value BIGINT NOT NULL DEFAULT 0
    )`,
   `CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status)`,
   `CREATE INDEX IF NOT EXISTS idx_orders_created_at ON orders(created_at DESC)`,

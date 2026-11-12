@@ -163,6 +163,20 @@ Shop name, contact email and the shipping line live in `src/lib/site.ts`.
 
 ---
 
+## Visitor counter
+
+The footer counter is real: one tick per browser session (refreshing or
+clicking around doesn't count again), stored as a single number in the
+`counters` table. No cookies, nothing about the visitor is saved. With no
+database it shows dashes. To set it to a number of your choosing, run this in
+the Neon SQL editor:
+
+```sql
+UPDATE counters SET value = 1234 WHERE name = 'visitors';
+```
+
+---
+
 ## Your orders dashboard
 
 Set a password in `.env.local`:
@@ -265,7 +279,8 @@ npm run db:init
 ```
 
 Safe to re-run any time — every statement is `IF NOT EXISTS` and nothing is ever
-dropped, so it cannot destroy order history.
+dropped, so it cannot destroy order history. Netlify also runs it automatically
+before every build, so schema changes reach the live database on deploy.
 
 ### 2. The domain
 
@@ -319,8 +334,11 @@ a few minutes.
    `STRIPE_SECRET_KEY` on Netlify.
 3. **Developers → Webhooks → Add endpoint**:
    - URL: `https://kittensknits.com/api/stripe/webhook`
-   - Events: `checkout.session.completed` and
-     `checkout.session.async_payment_succeeded`
+   - Events (all four):
+     - `checkout.session.completed`
+     - `checkout.session.async_payment_succeeded`
+     - `checkout.session.async_payment_failed`
+     - `checkout.session.expired` (puts abandoned items back on sale)
 4. Copy that endpoint's **signing secret** into `STRIPE_WEBHOOK_SECRET` on
    Netlify and redeploy.
 
@@ -371,14 +389,15 @@ CHECKOUT_MODE=enquiry npm run dev
 
 Honest list, so nothing surprises you later:
 
-- **No shipping calculation.** Stripe collects an address; postage is a flat
-  assumption. Add Stripe `shipping_options` when you know your rates.
+- **Shipping is one flat rate.** $6 per order, free over $100, US addresses
+  only. Change all three in `src/lib/shipping.ts`; the cart, Stripe and the
+  shipping blurb all follow.
 - **No transactional email.** Stripe sends a payment receipt; you don't send a
   "your order shipped" note yet. Resend or Postmark drops in easily.
-- **Stock is checked, not reserved.** Two people can hold the same one-off item
-  in their carts; the second one to pay wins and the first gets a "sold while
-  you were looking at it" message. Reserving at cart-add time is the fix, and
-  it's overkill until you're actually losing sales to it.
+- **Stock is held during payment, not in the cart.** Pressing the Stripe
+  button holds the items for 30 minutes (the Stripe session's lifetime). Anyone
+  else sees them as sold out until that shopper pays or the hold lapses. Adding
+  to a cart holds nothing.
 - **Admin auth is a shared password.** See above.
 - **No tax handling.** Stripe Tax is a config change when you need it.
 - **Neon's free tier sleeps after 5 minutes idle.** The first visitor after a
